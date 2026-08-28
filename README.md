@@ -62,7 +62,12 @@ Configuration is stored in `appsettings.json`:
 - `SyncOnStartup`: enables/disables startup sync
 - `SyncOnDeviceConnect`: enables/disables sync on mouse connect event
 
-## Run as Console App
+## Precompiled Release
+
+If you do not want to compile locally, download the precompiled release:
+- https://github.com/dariofil-star/AjazzMouseTimeSynch/releases/tag/PublicRelease_1
+
+## Run as Console App (from source)
 
 From repository root:
 
@@ -72,6 +77,25 @@ dotnet run --project .\AjazzMouseTimeSynch\AjazzMouseTimeSynch.csproj
 
 Open browser:
 - `http://127.0.0.1:5088` (or configured `WebPort`)
+
+## Run Precompiled Binary in Command Prompt (and view console output)
+
+1. Open **Command Prompt as Administrator**.
+2. Navigate to the extracted release folder:
+
+```cmd
+cd C:\Apps\AjazzMouseTimeSynch
+```
+
+3. Run the executable directly:
+
+```cmd
+AjazzMouseTimeSynch.exe
+```
+
+4. Keep that console window open to see live output/logs.
+5. Open the web UI at:
+   - `http://127.0.0.1:5088` (or your configured `WebPort`)
 
 ## Publish for Service Deployment
 

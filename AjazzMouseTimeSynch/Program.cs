@@ -41,6 +41,8 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AjazzClockSyncServ
 var app = builder.Build();
 
 app.MapGet("/", () => Results.Content(GetHtmlPage(), "text/html"));
+app.MapGet("/favicon.svg", () => Results.Content(HtmlPage.FavIcon, "image/svg+xml"));
+app.MapGet("/favicon.ico", () => Results.Content(HtmlPage.FavIcon, "image/svg+xml"));
 
 app.MapControllers();
 
