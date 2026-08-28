@@ -157,8 +157,9 @@ public static class HtmlPage
     }
 
     .row { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 12px; }
-    .controls { display: grid; grid-template-columns: 1fr 190px auto auto; gap: 12px; margin-bottom: 10px; }
+    .controls { display: grid; grid-template-columns: 1fr auto; gap: 12px; margin-bottom: 10px; }
     .custom-controls { display: grid; grid-template-columns: 1fr auto; gap: 12px; }
+    .config-controls { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center; }
     .toggle-grid { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 10px; }
 
     input, select, button {
@@ -283,6 +284,23 @@ public static class HtmlPage
       transition: color .2s ease;
     }
 
+    .app-state {
+      border: 1px solid rgba(255, 120, 120, .45);
+      background: rgba(80, 20, 20, .45);
+      color: #ffbaba;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin: 4px 0 12px;
+      font-size: .9rem;
+      display: none;
+    }
+
+    .app-offline .section {
+      opacity: .45;
+      filter: grayscale(.3);
+      pointer-events: none;
+    }
+
     .small { color: var(--muted); font-size: .84rem; word-break: break-all; }
 
     .chip {
@@ -300,6 +318,7 @@ public static class HtmlPage
     @media (max-width: 920px) {
       .controls { grid-template-columns: 1fr; }
       .custom-controls { grid-template-columns: 1fr; }
+      .config-controls { grid-template-columns: 1fr; }
       .toggle-grid { grid-template-columns: 1fr; }
       .row { grid-template-columns: 1fr; }
     }
@@ -312,7 +331,9 @@ public static class HtmlPage
   <div class="card">
     <h1>AJAZZ Clock Sync <span class="chip" id="portChip">Port</span></h1>
     <p>Select your AJAZZ mouse, control auto-sync behavior, and push custom time.</p>
+    <div class="app-state" id="appState">Application is not running. Waiting for service...</div>
 
+    <div id="appContent">
     <div class="section">
       <div class="section-title">Device Selection</div>
       <div class="row">
@@ -323,12 +344,10 @@ public static class HtmlPage
     </div>
 
     <div class="section">
-      <div class="section-title">Automatic Sync</div>
+      <div class="section-title">Automatic Sync (Hrs)</div>
       <div class="controls">
         <input id="intervalHours" type="number" min="1" step="1" placeholder="Sync interval (hours)" />
-        <button id="saveBtn"><span class="btn-icon">💾</span>Save Settings</button>
         <button class="success" id="syncBtn"><span class="btn-icon">⚡</span>Sync Now</button>
-        <button class="secondary" id="reloadBtn"><span class="btn-icon">↻</span>Reload</button>
       </div>
       <div class="toggle-grid">
         <label class="toggle"><input id="syncIntervalEnabled" type="checkbox" /> Enable Automatic Sync</label>
@@ -345,6 +364,16 @@ public static class HtmlPage
       </div>
     </div>
 
+    <div class="section">
+      <div class="section-title">Configuration File</div>
+      <div class="config-controls">
+        <button class="secondary" id="reloadBtn"><span class="btn-icon">↻</span>Reload</button>
+        <div></div>
+        <button id="saveBtn"><span class="btn-icon">💾</span>Save Settings</button>
+      </div>
+    </div>
+
+    </div>
     <div class="status" id="status"></div>
   </div>
 
@@ -356,16 +385,51 @@ public static class HtmlPage
     const syncIntervalEnabled = document.getElementById('syncIntervalEnabled');
     const syncOnStartup = document.getElementById('syncOnStartup');
     const syncOnDeviceConnect = document.getElementById('syncOnDeviceConnect');
+    const appState = document.getElementById('appState');
+    const appContent = document.getElementById('appContent');
     const status = document.getElementById('status');
     const selectedPath = document.getElementById('selectedPath');
     const portChip = document.getElementById('portChip');
 
     const wireframe = createWireframe(wireframeCanvas);
 
+    let appRunning = true;
+
     async function call(url, options) {
       const res = await fetch(url, options);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.headers.get('content-type')?.includes('application/json') ? await res.json() : null;
+    }
+
+    function setAppRunning(isRunning) {
+      if (appRunning === isRunning) {
+        return;
+      }
+
+      appRunning = isRunning;
+      appContent.classList.toggle('app-offline', !isRunning);
+
+      if (isRunning) {
+        appState.style.display = 'none';
+      } else {
+        appState.style.display = 'block';
+        appState.textContent = 'Application is not running. Waiting for service...';
+        setStatus('Service disconnected.', false);
+      }
+    }
+
+    async function monitorServiceStatus() {
+      try {
+        await call('/api/status', { cache: 'no-store' });
+
+        if (!appRunning) {
+          setAppRunning(true);
+          await loadAll();
+          setStatus('Service reconnected.');
+        }
+      } catch {
+        setAppRunning(false);
+      }
     }
 
     function createWireframe(canvas) {
@@ -539,11 +603,12 @@ public static class HtmlPage
           : 'Selected: auto-detect';
 
         portChip.textContent = `Port ${settings.webPort}`;
-        if (!customDateTime.value) customDateTime.value = toLocalDateTimeInputValue(new Date());
+        customDateTime.value = settings.lastCustomDateTime || '9999-09-09T00:00';
 
         setStatus('Configuration loaded.');
       } catch (err) {
         setStatus(`Load failed: ${err.message}`, false);
+        setAppRunning(false);
       }
     }
 
@@ -564,7 +629,8 @@ public static class HtmlPage
           syncIntervalHours: Number(intervalHours.value || 1),
           syncIntervalEnabled: syncIntervalEnabled.checked,
           syncOnStartup: syncOnStartup.checked,
-          syncOnDeviceConnect: syncOnDeviceConnect.checked
+          syncOnDeviceConnect: syncOnDeviceConnect.checked,
+          lastCustomDateTime: customDateTime.value || '9999-09-09T00:00'
         };
 
         const updated = await call('/api/settings', {
@@ -580,6 +646,7 @@ public static class HtmlPage
         selectedPath.textContent = updated.selectedDevicePath
           ? `Selected: ${updated.selectedDevicePath}`
           : 'Selected: auto-detect';
+        customDateTime.value = updated.lastCustomDateTime || customDateTime.value || '9999-09-09T00:00';
 
         setStatus('Settings saved.');
       } catch (err) {
@@ -610,6 +677,7 @@ public static class HtmlPage
           body: JSON.stringify(payload)
         });
 
+        customDateTime.value = result.lastCustomDateTime || customDateTime.value;
         setStatus(result.success
           ? `Custom sync succeeded for ${result.timestamp}.`
           : 'Custom sync failed (device unavailable or rejected).', result.success);
@@ -622,6 +690,8 @@ public static class HtmlPage
 
     window.addEventListener('resize', () => wireframe.resize(), { passive: true });
 
+    setInterval(monitorServiceStatus, 2000);
+    monitorServiceStatus();
     loadAll();
   </script>
 </body>

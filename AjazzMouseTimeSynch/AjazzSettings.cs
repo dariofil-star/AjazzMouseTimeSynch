@@ -8,6 +8,7 @@ public sealed class AjazzSettings
     public bool SyncIntervalEnabled { get; set; } = true;
     public bool SyncOnStartup { get; set; } = true;
     public bool SyncOnDeviceConnect { get; set; } = true;
+    public string LastCustomDateTime { get; set; } = "9999-09-09T00:00";
 }
 
 public sealed class AjazzSettingsUpdateRequest
@@ -17,6 +18,7 @@ public sealed class AjazzSettingsUpdateRequest
     public bool? SyncIntervalEnabled { get; set; }
     public bool? SyncOnStartup { get; set; }
     public bool? SyncOnDeviceConnect { get; set; }
+    public string? LastCustomDateTime { get; set; }
 }
 
 public sealed class AjazzManualSyncRequest
@@ -74,6 +76,11 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
                 _settings.SyncOnDeviceConnect = update.SyncOnDeviceConnect.Value;
             }
 
+            if (update.LastCustomDateTime is not null)
+            {
+                _settings.LastCustomDateTime = NormalizeCustomDateTime(update.LastCustomDateTime);
+            }
+
             Persist(_settings);
             return Clone(_settings);
         }
@@ -87,6 +94,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
         settings.WebPort = settings.WebPort <= 0 ? 5088 : settings.WebPort;
         settings.SyncIntervalHours = NormalizeInterval(settings.SyncIntervalHours);
         settings.SelectedDevicePath ??= string.Empty;
+        settings.LastCustomDateTime = NormalizeCustomDateTime(settings.LastCustomDateTime);
 
         return settings;
     }
@@ -100,13 +108,24 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             SyncIntervalHours = settings.SyncIntervalHours,
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
             SyncOnStartup = settings.SyncOnStartup,
-            SyncOnDeviceConnect = settings.SyncOnDeviceConnect
+            SyncOnDeviceConnect = settings.SyncOnDeviceConnect,
+            LastCustomDateTime = settings.LastCustomDateTime
         };
     }
 
     private static int NormalizeInterval(int intervalHours)
     {
         return intervalHours < 1 ? 1 : intervalHours;
+    }
+
+    private static string NormalizeCustomDateTime(string? customDateTime)
+    {
+        if (string.IsNullOrWhiteSpace(customDateTime))
+        {
+            return "9999-09-09T00:00";
+        }
+
+        return customDateTime.Trim();
     }
 
     private void Persist(AjazzSettings settings)
@@ -128,7 +147,8 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             SyncIntervalHours = settings.SyncIntervalHours,
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
             SyncOnStartup = settings.SyncOnStartup,
-            SyncOnDeviceConnect = settings.SyncOnDeviceConnect
+            SyncOnDeviceConnect = settings.SyncOnDeviceConnect,
+            LastCustomDateTime = settings.LastCustomDateTime
         };
 
         string json = JsonSerializer.Serialize(normalized, new JsonSerializerOptions

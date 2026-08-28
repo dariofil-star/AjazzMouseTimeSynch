@@ -52,7 +52,27 @@ public sealed class AjazzController(IAjazzSettingsStore settingsStore, AjazzCloc
         DateTime requested = request.TargetDateTime.Value;
         DateTime localTarget = requested.Kind == DateTimeKind.Utc ? requested.ToLocalTime() : requested;
 
+        AjazzSettings persisted = settingsStore.UpdateSettings(new AjazzSettingsUpdateRequest
+        {
+            LastCustomDateTime = localTarget.ToString("yyyy-MM-ddTHH:mm")
+        });
+
         bool success = await syncService.TrySyncAtAsync("manual custom", localTarget, cancellationToken);
-        return Ok(new { success, timestamp = localTarget.ToString("yyyy-MM-dd HH:mm:ss") });
+        return Ok(new
+        {
+            success,
+            timestamp = localTarget.ToString("yyyy-MM-dd HH:mm:ss"),
+            lastCustomDateTime = persisted.LastCustomDateTime
+        });
+    }
+
+    [HttpGet("status")]
+    public IActionResult Status()
+    {
+        return Ok(new
+        {
+            running = true,
+            utc = DateTime.UtcNow
+        });
     }
 }
