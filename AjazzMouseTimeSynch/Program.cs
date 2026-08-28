@@ -1,5 +1,6 @@
 ﻿using Microsoft.Extensions.Hosting.WindowsServices;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.EventLog;
 
 var isWindowsService = OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService();
 
@@ -17,7 +18,10 @@ if (isWindowsService)
     builder.Logging.AddEventLog(settings =>
     {
         settings.SourceName = "AjazzMouseTimeSynch";
+        settings.LogName = "Application";
     });
+
+    builder.Logging.AddFilter<EventLogLoggerProvider>(null, LogLevel.Information);
 }
 else
 {
