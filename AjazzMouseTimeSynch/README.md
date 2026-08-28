@@ -1,6 +1,6 @@
 # AJAZZ Mouse Time Sync
 
-AJAZZ Mouse Time Sync is a .NET 10 Windows app/service that syncs the onboard clock of supported AJAZZ mice over HID.
+AJAZZ Mouse Time Sync is a .NET 10 Windows app/service that syncs the onboard clock of supported AJAZZ mice over HID/USB.
 
 It provides:
 - Automatic and manual time sync
