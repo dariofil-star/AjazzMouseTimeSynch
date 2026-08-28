@@ -21,7 +21,10 @@ if (isWindowsService)
         settings.LogName = "Application";
     });
 
-    builder.Logging.AddFilter<EventLogLoggerProvider>(null, LogLevel.Information);
+    builder.Logging.AddFilter<EventLogLoggerProvider>((category, level) =>
+        category is not null
+        && category.StartsWith("Ajazz", StringComparison.Ordinal)
+        && level >= LogLevel.Warning);
 }
 else
 {

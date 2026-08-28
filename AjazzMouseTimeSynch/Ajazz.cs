@@ -4,6 +4,12 @@ using Microsoft.Extensions.Logging;
 
 public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger, IAjazzSettingsStore settingsStore) : BackgroundService
 {
+    private static readonly EventId ServiceStartedEvent = new(1000, nameof(ServiceStartedEvent));
+    private static readonly EventId ServiceStoppedEvent = new(1001, nameof(ServiceStoppedEvent));
+    private static readonly EventId TimeSyncUpdatedEvent = new(1100, nameof(TimeSyncUpdatedEvent));
+    private static readonly EventId DeviceChangeErrorEvent = new(1200, nameof(DeviceChangeErrorEvent));
+    private static readonly EventId TimeSyncErrorEvent = new(1201, nameof(TimeSyncErrorEvent));
+
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly Lock _devicePathsLock = new();
     private HashSet<string> _knownAjazzDevicePaths = [];
@@ -14,7 +20,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
     {
         _stoppingToken = stoppingToken;
 
-        logger.LogInformation("AJAZZ Clock Sync started.");
+        logger.LogWarning(ServiceStartedEvent, "AJAZZ Clock Sync service started.");
 
         _deviceList = DeviceList.Local;
         lock (_devicePathsLock)
@@ -30,7 +36,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         }
         else
         {
-            logger.LogInformation("Startup sync is disabled by configuration.");
+            logger.LogDebug("Startup sync is disabled by configuration.");
         }
 
         try
@@ -61,7 +67,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
                 _deviceList.Changed -= OnDeviceListChanged;
             }
 
-            logger.LogInformation("AJAZZ Clock Sync stopped.");
+            logger.LogWarning(ServiceStoppedEvent, "AJAZZ Clock Sync service stopped.");
         }
     }
 
@@ -96,7 +102,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
             return;
         }
 
-        logger.LogInformation("HID device list changed (plug/unplug). Evaluating AJAZZ connect state.");
+        logger.LogDebug("HID device list changed (plug/unplug). Evaluating AJAZZ connect state.");
 
         bool hasNewConnection = false;
         lock (_devicePathsLock)
@@ -113,7 +119,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
 
         if (!settingsStore.GetSettings().SyncOnDeviceConnect)
         {
-            logger.LogInformation("Device-connect sync is disabled by configuration.");
+            logger.LogDebug("Device-connect sync is disabled by configuration.");
             return;
         }
 
@@ -130,7 +136,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
             }
             catch (Exception ex)
             {
-                logger.LogError(ex, "Unexpected error while handling device change.");
+                logger.LogError(DeviceChangeErrorEvent, ex, "Unexpected error while handling device change.");
             }
         }, _stoppingToken);
     }
@@ -149,11 +155,11 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
                 {
                     string productName = device.GetFriendlyName() ?? string.Empty;
 
-                    logger.LogInformation("Found device ({Reason}): {ProductName} {DevicePath}", reason, productName, device.DevicePath);
+                    logger.LogDebug("Found device ({Reason}): {ProductName} {DevicePath}", reason, productName, device.DevicePath);
 
                     if (!device.TryOpen(out HidStream? stream))
                     {
-                        logger.LogWarning("Unable to open AJAZZ HID interface.");
+                        logger.LogDebug("Unable to open AJAZZ HID interface.");
                         continue;
                     }
 
@@ -161,25 +167,25 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
                     {
                         byte[] payload = BuildTimePacket(targetDateTime);
 
-                        logger.LogInformation("Syncing clock: {Timestamp:yyyy-MM-dd HH:mm:ss}", targetDateTime);
+                        logger.LogDebug("Syncing clock: {Timestamp:yyyy-MM-dd HH:mm:ss}", targetDateTime);
                         stream.SetFeature(payload);
-                        logger.LogInformation("Clock sync succeeded.");
+                        logger.LogWarning(TimeSyncUpdatedEvent, "Clock sync succeeded ({Reason}) at {Timestamp:yyyy-MM-dd HH:mm:ss}.", reason, targetDateTime);
                         return true;
                     }
                 }
                 catch (Exception ex)
                 {
-                    logger.LogWarning(ex, "A matching interface rejected the time sync packet.");
+                    logger.LogError(TimeSyncErrorEvent, ex, "A matching interface rejected the time sync packet.");
                 }
             }
 
             if (string.IsNullOrWhiteSpace(settings.SelectedDevicePath))
             {
-                logger.LogInformation("No compatible AJAZZ interface accepted the time sync packet.");
+                logger.LogDebug("No compatible AJAZZ interface accepted the time sync packet.");
             }
             else
             {
-                logger.LogInformation("Selected AJAZZ device was not available or did not accept the sync packet.");
+                logger.LogDebug("Selected AJAZZ device was not available or did not accept the sync packet.");
             }
 
             return false;

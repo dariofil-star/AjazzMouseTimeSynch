@@ -114,6 +114,15 @@ sc.exe delete AjazzMouseTimeSynch
 - Windows Service mode: logs are written to **Event Viewer**:
   - **Windows Logs > Application**
   - **Source**: `AjazzMouseTimeSynch`
+  - Designed to log only high-signal entries (start/stop/time-updated + errors).
+
+### Event IDs (Event Viewer)
+
+- `1000` - Service started
+- `1001` - Service stopped
+- `1100` - Time sync updated successfully
+- `1200` - Device change handling error
+- `1201` - Time sync error
 
 ## Web UI Screenshot
 
