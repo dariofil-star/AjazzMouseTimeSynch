@@ -124,6 +124,8 @@ sc.exe delete AjazzMouseTimeSynch
 - `1200` - Device change handling error
 - `1201` - Time sync error
 
+![EventViewer](docs/eventviewer.png)
+
 ## Web UI Screenshot
 
 ![AJAZZ Clock Sync Web UI](docs/web-ui.png)
