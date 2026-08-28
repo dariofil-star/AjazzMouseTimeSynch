@@ -329,7 +329,7 @@ public static class HtmlPage
   <canvas id="wireframe" class="wireframe"></canvas>
 
   <div class="card">
-    <h1>AJAZZ Clock Sync <span class="chip" id="portChip">Port</span></h1>
+    <h1>AJAZZ Clock Sync <span class="chip" id="portChip">Host</span></h1>
     <p>Select your AJAZZ mouse, control auto-sync behavior, and push custom time.</p>
     <div class="app-state" id="appState">Application is not running. Waiting for service...</div>
 
@@ -602,7 +602,7 @@ public static class HtmlPage
           ? `Selected: ${settings.selectedDevicePath}`
           : 'Selected: auto-detect';
 
-        portChip.textContent = `Port ${settings.webPort}`;
+        portChip.textContent = `Host ${settings.webHost}`;
         customDateTime.value = settings.lastCustomDateTime || '9999-09-09T00:00';
 
         setStatus('Configuration loaded.');

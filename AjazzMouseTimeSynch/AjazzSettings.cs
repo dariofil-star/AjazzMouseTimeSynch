@@ -2,7 +2,7 @@ using System.Text.Json;
 
 public sealed class AjazzSettings
 {
-    public int WebPort { get; set; } = 5088;
+    public string WebHost { get; set; } = "http://127.0.0.1:5580";
     public string SelectedDevicePath { get; set; } = string.Empty;
     public int SyncIntervalHours { get; set; } = 1;
     public bool SyncIntervalEnabled { get; set; } = true;
@@ -91,7 +91,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
         var settings = new AjazzSettings();
         configuration.GetSection("Ajazz").Bind(settings);
 
-        settings.WebPort = settings.WebPort <= 0 ? 5088 : settings.WebPort;
+        settings.WebHost = NormalizeWebHost(settings.WebHost);
         settings.SyncIntervalHours = NormalizeInterval(settings.SyncIntervalHours);
         settings.SelectedDevicePath ??= string.Empty;
         settings.LastCustomDateTime = NormalizeCustomDateTime(settings.LastCustomDateTime);
@@ -103,7 +103,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
     {
         return new AjazzSettings
         {
-            WebPort = settings.WebPort,
+            WebHost = settings.WebHost,
             SelectedDevicePath = settings.SelectedDevicePath,
             SyncIntervalHours = settings.SyncIntervalHours,
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
@@ -116,6 +116,16 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
     private static int NormalizeInterval(int intervalHours)
     {
         return intervalHours < 1 ? 1 : intervalHours;
+    }
+
+    private static string NormalizeWebHost(string? webHost)
+    {
+        if (string.IsNullOrWhiteSpace(webHost))
+        {
+            return "http://127.0.0.1:5580";
+        }
+
+        return webHost.Trim();
     }
 
     private static string NormalizeCustomDateTime(string? customDateTime)
@@ -142,7 +152,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
 
         normalized["Ajazz"] = new AjazzSettings
         {
-            WebPort = settings.WebPort,
+            WebHost = settings.WebHost,
             SelectedDevicePath = settings.SelectedDevicePath,
             SyncIntervalHours = settings.SyncIntervalHours,
             SyncIntervalEnabled = settings.SyncIntervalEnabled,

@@ -34,8 +34,10 @@ else
 
 var startupSettings = new AjazzSettings();
 builder.Configuration.GetSection("Ajazz").Bind(startupSettings);
-int webPort = startupSettings.WebPort <= 0 ? 5088 : startupSettings.WebPort;
-builder.WebHost.UseUrls($"http://127.0.0.1:{webPort}");
+string webHost = string.IsNullOrWhiteSpace(startupSettings.WebHost)
+    ? "http://127.0.0.1:5580"
+    : startupSettings.WebHost.Trim();
+builder.WebHost.UseUrls(webHost);
 
 builder.Services.AddControllers();
 builder.Services.AddSingleton<IAjazzSettingsStore, AjazzSettingsStore>();
