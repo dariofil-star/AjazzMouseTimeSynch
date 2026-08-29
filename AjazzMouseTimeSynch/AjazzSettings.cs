@@ -30,6 +30,20 @@ public sealed class AjazzManualSyncRequest
 
 public sealed record AjazzHidDeviceInfo(string DevicePath, string ProductName, int VendorId, int ProductId);
 
+public sealed class AjazzCaptureRequest
+{
+    public string Label { get; set; } = string.Empty;
+}
+
+public sealed class AjazzCaptureDiffRequest
+{
+    public string LeftLabel { get; set; } = string.Empty;
+    public string RightLabel { get; set; } = string.Empty;
+    public int ReportId { get; set; }
+    public int InterfaceNumber { get; set; }
+    public int Endpoint { get; set; }
+}
+
 public interface IAjazzSettingsStore
 {
     AjazzSettings GetSettings();

@@ -72,6 +72,80 @@ public sealed class AjazzController(IAjazzSettingsStore settingsStore, AjazzCloc
         return Ok(syncService.GetMonitoringStatus());
     }
 
+    [HttpGet("hid/reports")]
+    public IActionResult GetRecentHidReports([FromQuery] int take = 100)
+    {
+        return Ok(syncService.GetRecentHidReports(take));
+    }
+
+    [HttpGet("reverse/state")]
+    public IActionResult GetReverseState()
+    {
+        return Ok(syncService.GetReverseEngineState());
+    }
+
+    [HttpGet("reverse/descriptors")]
+    public IActionResult GetDescriptors()
+    {
+        return Ok(syncService.GetDescriptorSnapshots());
+    }
+
+    [HttpGet("reverse/observed")]
+    public IActionResult GetObservedReports([FromQuery] int take = 200)
+    {
+        return Ok(syncService.GetObservedReports(take));
+    }
+
+    [HttpGet("reverse/captures")]
+    public IActionResult GetCaptureSessions()
+    {
+        return Ok(syncService.GetCaptureSessions());
+    }
+
+    [HttpPost("reverse/captures/start")]
+    public IActionResult StartCapture([FromBody] AjazzCaptureRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Label))
+        {
+            return BadRequest(new { message = "label is required." });
+        }
+
+        syncService.BeginCaptureSession(request.Label.Trim());
+        return Ok(new { started = true, label = request.Label.Trim() });
+    }
+
+    [HttpPost("reverse/captures/stop")]
+    public IActionResult StopCapture([FromBody] AjazzCaptureRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.Label))
+        {
+            return BadRequest(new { message = "label is required." });
+        }
+
+        syncService.EndCaptureSession(request.Label.Trim());
+        return Ok(new { stopped = true, label = request.Label.Trim() });
+    }
+
+    [HttpPost("reverse/captures/diff")]
+    public IActionResult DiffCaptureSessions([FromBody] AjazzCaptureDiffRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.LeftLabel) || string.IsNullOrWhiteSpace(request.RightLabel))
+        {
+            return BadRequest(new { message = "leftLabel and rightLabel are required." });
+        }
+
+        CaptureDiffResult? diff = syncService.DiffCaptureSessions(
+            request.LeftLabel.Trim(),
+            request.RightLabel.Trim(),
+            request.ReportId,
+            request.InterfaceNumber,
+            request.Endpoint);
+
+        return diff is null
+            ? NotFound(new { message = "Capture labels not found." })
+            : Ok(diff);
+    }
+
     [HttpGet("status")]
     public IActionResult Status()
     {

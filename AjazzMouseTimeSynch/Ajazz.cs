@@ -18,6 +18,18 @@ public sealed record AjazzMonitoringStatus(
     string Product,
     string LastConnectionTransition);
 
+public sealed record AjazzRawHidReport(
+    DateTimeOffset TimestampUtc,
+    string DevicePath,
+    string InterfaceTag,
+    int InterfaceNumber,
+    int Endpoint,
+    string Direction,
+    int ReportId,
+    int Length,
+    string HexBytes,
+    string Notes);
+
 public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger, IAjazzSettingsStore settingsStore) : BackgroundService
 {
     private static readonly EventId ServiceStartedEvent = new(1000, nameof(ServiceStartedEvent));
@@ -49,9 +61,14 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         "disconnected"
     };
 
+    private const int MaxRawReports = 512;
+
     private readonly SemaphoreSlim _syncLock = new(1, 1);
     private readonly Lock _monitoringLock = new();
+    private readonly Lock _rawReportLock = new();
     private readonly AjazzDeviceMonitor _deviceMonitor = new(TimeSpan.FromMilliseconds(750));
+    private readonly HidMouseReverseEngineeringEngine _reverseEngine = new();
+    private readonly LinkedList<AjazzRawHidReport> _recentRawReports = [];
 
     private CancellationToken _stoppingToken;
     private AjazzDeviceSnapshot _currentSnapshot = AjazzDeviceSnapshot.Disconnected;
@@ -82,11 +99,26 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         logger.LogWarning(ServiceStartedEvent, "AJAZZ Clock Sync service started.");
 
         _deviceMonitor.SnapshotChanged += OnDeviceSnapshotChanged;
-        _deviceMonitor.Start();
+
+        try
+        {
+            _deviceMonitor.Start();
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(DeviceChangeErrorEvent, ex, "Failed to start device monitor. Device monitoring will be unavailable.");
+        }
 
         if (settingsStore.GetSettings().SyncOnStartup)
         {
-            await TrySyncNowAsync("startup", stoppingToken);
+            try
+            {
+                await TrySyncNowAsync("startup", stoppingToken);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(TimeSyncErrorEvent, ex, "Startup time sync failed.");
+            }
         }
         else
         {
@@ -140,6 +172,54 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
                 LastConnectionTransition = FormatConnectionTransition(_monitoringStatus.LastConnectionTransition)
             };
         }
+    }
+
+    public IReadOnlyList<AjazzRawHidReport> GetRecentHidReports(int take)
+    {
+        int requested = take <= 0 ? 100 : Math.Min(take, 500);
+
+        lock (_rawReportLock)
+        {
+            return _recentRawReports
+                .TakeLast(requested)
+                .Reverse()
+                .ToList();
+        }
+    }
+
+    public MouseState GetReverseEngineState()
+    {
+        return _reverseEngine.GetState();
+    }
+
+    public IReadOnlyList<HidInterfaceDescriptorSnapshot> GetDescriptorSnapshots()
+    {
+        return _reverseEngine.GetDescriptorSnapshots();
+    }
+
+    public IReadOnlyList<HidObservedReport> GetObservedReports(int take)
+    {
+        return _reverseEngine.GetRecentReports(take);
+    }
+
+    public IReadOnlyList<LabeledCapture> GetCaptureSessions()
+    {
+        return _reverseEngine.GetCompletedCaptures();
+    }
+
+    public void BeginCaptureSession(string label)
+    {
+        _reverseEngine.BeginCapture(label);
+    }
+
+    public void EndCaptureSession(string label)
+    {
+        _reverseEngine.EndCapture(label);
+    }
+
+    public CaptureDiffResult? DiffCaptureSessions(string leftLabel, string rightLabel, int reportId, int interfaceNumber, int endpoint)
+    {
+        return _reverseEngine.DiffCaptures(leftLabel, rightLabel, reportId, interfaceNumber, endpoint);
     }
 
     public Task<bool> TrySyncNowAsync(string reason, CancellationToken cancellationToken = default)
@@ -198,7 +278,9 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         {
             try
             {
-                RefreshActivityStateFromSystemInput(DateTimeOffset.UtcNow);
+                DateTimeOffset now = DateTimeOffset.UtcNow;
+                _reverseEngine.Tick(now);
+                RefreshActivityStateFromSystemInput(now);
             }
             catch (Exception ex)
             {
@@ -209,15 +291,22 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         }
     }
 
-    private async Task PollBatteryOnceAsync(CancellationToken cancellationToken)
+    private Task PollBatteryOnceAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         AjazzSettings settings = settingsStore.GetSettings();
-        List<HidDevice> candidates = GetSyncCandidates(settings, _currentSnapshot).ToList();
+        AjazzDeviceSnapshot snapshot = _currentSnapshot;
+        List<HidDevice> candidates = GetSyncCandidates(settings, snapshot).ToList();
+
+        bool capturedFeature = false;
 
         foreach (HidDevice device in candidates)
         {
             try
             {
+                _reverseEngine.RecordDescriptor(device, 2, 0x83);
+
                 if (!device.TryOpen(out HidStream? stream))
                 {
                     continue;
@@ -225,39 +314,15 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
 
                 using (stream)
                 {
-                    int? battery = await TryReadBatteryPercentageAsync(stream, cancellationToken);
-                    if (!battery.HasValue)
+                    byte[]? feature = TryReadVendorFeatureReport(stream);
+                    if (feature is null)
                     {
                         continue;
                     }
 
-                    DateTimeOffset now = DateTimeOffset.UtcNow;
-                    AjazzDeviceSnapshot snapshot = _currentSnapshot;
-                    string transport = GetTransportKey(device, snapshot);
-                    string activityState;
-                    string powerState;
-
-                    lock (_monitoringLock)
-                    {
-                        activityState = _monitoringStatus.ActivityCaptureState;
-                        powerState = ResolvePowerState(snapshot.Mode, activityState, battery, _lastBatteryPercentage, connected: true);
-                        _lastBatteryPercentage = battery;
-                        _monitoringStatus = _monitoringStatus with
-                        {
-                            BatteryPercentage = battery,
-                            LastBatteryReadUtc = now,
-                            Transport = transport,
-                            DevicePath = device.DevicePath,
-                            IsConnected = true,
-                            ConnectionMode = GetConnectionModeKey(snapshot.Mode),
-                            DeviceInstanceId = snapshot.DeviceInstanceId,
-                            Manufacturer = snapshot.Manufacturer,
-                            Product = snapshot.Product,
-                            PowerCaptureState = PowerCaptureStates.Contains(powerState) ? powerState : _monitoringStatus.PowerCaptureState
-                        };
-                    }
-
-                    return;
+                    capturedFeature = true;
+                    AddRawReport(device.DevicePath, "mi_02", "feature", 0, feature, "Vendor feature report (FF:02, 64 bytes payload)");
+                    break;
                 }
             }
             catch (OperationCanceledException)
@@ -266,8 +331,41 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
             }
             catch (Exception ex)
             {
-                logger.LogDebug(ex, "Failed to read battery from candidate HID interface.");
+                logger.LogDebug(ex, "Failed to read vendor feature report from control interface.");
             }
+        }
+
+        CaptureVendorInputReports(snapshot);
+
+        if (capturedFeature)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            HidDevice? referenceDevice = candidates.FirstOrDefault();
+            string transport = referenceDevice is null ? GetTransportKeyFromSnapshot(snapshot) : GetTransportKey(referenceDevice, snapshot);
+            string activityState;
+            string powerState;
+
+            lock (_monitoringLock)
+            {
+                activityState = _monitoringStatus.ActivityCaptureState;
+                powerState = ResolvePowerState(snapshot.Mode, activityState, null, _lastBatteryPercentage, connected: true);
+                _lastBatteryPercentage = null;
+                _monitoringStatus = _monitoringStatus with
+                {
+                    BatteryPercentage = null,
+                    LastBatteryReadUtc = now,
+                    Transport = transport,
+                    DevicePath = referenceDevice?.DevicePath ?? _monitoringStatus.DevicePath,
+                    IsConnected = true,
+                    ConnectionMode = GetConnectionModeKey(snapshot.Mode),
+                    DeviceInstanceId = snapshot.DeviceInstanceId,
+                    Manufacturer = snapshot.Manufacturer,
+                    Product = snapshot.Product,
+                    PowerCaptureState = PowerCaptureStates.Contains(powerState) ? powerState : _monitoringStatus.PowerCaptureState
+                };
+            }
+
+            return Task.CompletedTask;
         }
 
         if (_currentSnapshot.Mode == AjazzConnectionMode.Disconnected)
@@ -288,27 +386,184 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
                 };
             }
         }
+
+        return Task.CompletedTask;
     }
 
-    private static async Task<int?> TryReadBatteryPercentageAsync(HidStream stream, CancellationToken cancellationToken)
+    private void CaptureVendorInputReports(AjazzDeviceSnapshot snapshot)
     {
-        byte[] setFeature = new byte[65];
-        setFeature[1] = 0xF7;
-        stream.SetFeature(setFeature);
+        if (snapshot.Mode == AjazzConnectionMode.Disconnected)
+        {
+            return;
+        }
 
-        await Task.Delay(30, cancellationToken);
+        List<HidDevice> devices = DeviceList.Local
+            .GetHidDevices()
+            .Where(d => IsAjazzInputOrVendorInterface(d, snapshot))
+            .ToList();
 
+        foreach (HidDevice device in devices)
+        {
+            try
+            {
+                int interfaceNumber = GetInterfaceNumber(device.DevicePath);
+                int endpoint = GetEndpointByInterface(interfaceNumber);
+                _reverseEngine.RecordDescriptor(device, interfaceNumber, endpoint);
+
+                if (!device.TryOpen(out HidStream? stream))
+                {
+                    continue;
+                }
+
+                using (stream)
+                {
+                    stream.ReadTimeout = 20;
+                    int maxLength = Math.Max(8, device.GetMaxInputReportLength());
+                    byte[] buffer = new byte[maxLength];
+
+                    for (int i = 0; i < 4; i++)
+                    {
+                        int read;
+                        try
+                        {
+                            read = stream.Read(buffer, 0, buffer.Length);
+                        }
+                        catch (TimeoutException)
+                        {
+                            break;
+                        }
+
+                        if (read <= 0)
+                        {
+                            break;
+                        }
+
+                        byte[] payload = buffer[..read].ToArray();
+                        string interfaceTag = GetInterfaceTag(device.DevicePath);
+                        int reportId = interfaceTag == "mi_00" ? 0 : payload[0];
+                        string notes = interfaceTag == "mi_01" && reportId == 5
+                            ? "Vendor input report (Report ID 5, FF:01, 3-byte payload)"
+                            : interfaceTag == "mi_00"
+                                ? "Standard mouse report"
+                                : "Additional input report";
+
+                        AddRawReport(device.DevicePath, interfaceTag, "input", reportId, payload, notes);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogDebug(ex, "Failed to capture input reports for reverse-engineering.");
+            }
+        }
+    }
+
+    private static byte[]? TryReadVendorFeatureReport(HidStream stream)
+    {
         byte[] response = new byte[65];
-        response[0] = 0x05;
         stream.GetFeature(response);
 
-        if (response[0] != 0x05 || response[1] != 0x00 || response[2] != 0x00)
+        if (response.Length < 65)
         {
             return null;
         }
 
-        int percent = response[3];
-        return percent is >= 0 and <= 100 ? percent : null;
+        return response;
+    }
+
+    private void AddRawReport(string devicePath, string interfaceTag, string direction, int reportId, byte[] bytes, string notes)
+    {
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        string hex = Convert.ToHexString(bytes);
+        int interfaceNumber = GetInterfaceNumber(devicePath);
+        int endpoint = GetEndpointByInterface(interfaceNumber);
+
+        AjazzRawHidReport report = new(
+            now,
+            devicePath,
+            interfaceTag,
+            interfaceNumber,
+            endpoint,
+            direction,
+            reportId,
+            bytes.Length,
+            hex,
+            notes);
+
+        lock (_rawReportLock)
+        {
+            _recentRawReports.AddLast(report);
+            while (_recentRawReports.Count > MaxRawReports)
+            {
+                _recentRawReports.RemoveFirst();
+            }
+        }
+
+        HidReportDirection reportDirection = string.Equals(direction, "feature", StringComparison.OrdinalIgnoreCase)
+            ? HidReportDirection.Feature
+            : HidReportDirection.Input;
+
+        IReadOnlyList<DecodedHidUsage> decoded = DecodeKnownUsages(interfaceNumber, reportId, bytes);
+        bool isMovement = decoded.Any(d => (d.UsagePage == 0x01 && (d.Usage == 0x30 || d.Usage == 0x31) && d.Value != 0));
+        bool isWheel = decoded.Any(d => (d.UsagePage == 0x01 && (d.Usage == 0x38 || d.Usage == 0x0238) && d.Value != 0));
+        bool isButton = decoded.Any(d => d.UsagePage == 0x09 && d.Value != 0);
+        bool isVendor = interfaceNumber == 1 && reportId == 5 || interfaceNumber == 2;
+
+        _reverseEngine.RecordReport(new HidObservedReport(
+            now,
+            devicePath,
+            GetDeviceIdentityKey(devicePath),
+            MapConnectionState(_currentSnapshot.Mode),
+            interfaceNumber,
+            endpoint,
+            reportDirection,
+            reportId,
+            bytes.Length,
+            bytes,
+            decoded,
+            isMovement,
+            isButton,
+            isWheel,
+            isVendor,
+            notes));
+
+        SyncMonitoringFromReverseState();
+
+        if ((interfaceTag == "mi_01" && reportId == 5) || (interfaceTag == "mi_02" && direction == "feature"))
+        {
+            logger.LogInformation(
+                "HID capture Interface={Interface} Endpoint=0x{Endpoint:X2} Direction={Direction} ReportId={ReportId} Length={Length} Data={Data}",
+                interfaceTag,
+                endpoint,
+                direction,
+                reportId,
+                bytes.Length,
+                hex);
+        }
+    }
+
+    private void SyncMonitoringFromReverseState()
+    {
+        MouseState state = _reverseEngine.GetState();
+
+        lock (_monitoringLock)
+        {
+            _monitoringStatus = _monitoringStatus with
+            {
+                BatteryPercentage = state.BatteryPercent,
+                LastBatteryReadUtc = state.LastBatteryUpdate,
+                LastActivityReadUtc = state.LastActivity,
+                PowerCaptureState = state.DerivedState,
+                ActivityCaptureState = state.ActivityState switch
+                {
+                    MouseActivityState.AwakeAndMoving => "awake-and-moving",
+                    MouseActivityState.IdleButAwake => "idle-but-awake",
+                    MouseActivityState.ActualSleep => "actual-sleep",
+                    MouseActivityState.WakeAfterMovement => "wake-after-movement",
+                    _ => _monitoringStatus.ActivityCaptureState
+                }
+            };
+        }
     }
 
     private void RefreshActivityStateFromSystemInput(DateTimeOffset now)
@@ -417,6 +672,11 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         {
             AjazzDeviceSnapshot previous = _currentSnapshot;
             _currentSnapshot = snapshot;
+
+            _reverseEngine.UpdateConnection(
+                MapConnectionState(snapshot.Mode),
+                $"VID={snapshot.VendorId:X4} PID={snapshot.ProductId:X4} mode={snapshot.Mode} path={snapshot.DeviceInterfacePath}");
+            SyncMonitoringFromReverseState();
 
             if (previous.Mode == snapshot.Mode
                 && string.Equals(previous.DeviceInterfacePath, snapshot.DeviceInterfacePath, StringComparison.OrdinalIgnoreCase)
@@ -678,6 +938,163 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         }
     }
 
+    private static bool IsAjazzInputOrVendorInterface(HidDevice device, AjazzDeviceSnapshot snapshot)
+    {
+        try
+        {
+            if (device.VendorID != 0x3151 || (device.ProductID != 0x5007 && device.ProductID != 0x4026))
+            {
+                return false;
+            }
+
+            if (!device.DevicePath.Contains("&mi_00", StringComparison.OrdinalIgnoreCase)
+                && !device.DevicePath.Contains("&mi_01", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (snapshot.Mode is not AjazzConnectionMode.Dock and not AjazzConnectionMode.Direct)
+            {
+                return true;
+            }
+
+            return device.ProductID == snapshot.ProductId
+                && string.Equals(GetDeviceIdentityKey(device.DevicePath), GetDeviceIdentityKey(snapshot.DeviceInterfacePath), StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string GetInterfaceTag(string devicePath)
+    {
+        if (devicePath.Contains("&mi_00", StringComparison.OrdinalIgnoreCase))
+        {
+            return "mi_00";
+        }
+
+        if (devicePath.Contains("&mi_01", StringComparison.OrdinalIgnoreCase))
+        {
+            return "mi_01";
+        }
+
+        if (devicePath.Contains("&mi_02", StringComparison.OrdinalIgnoreCase))
+        {
+            return "mi_02";
+        }
+
+        return "unknown";
+    }
+
+    private static int GetInterfaceNumber(string devicePath)
+    {
+        if (devicePath.Contains("&mi_00", StringComparison.OrdinalIgnoreCase))
+        {
+            return 0;
+        }
+
+        if (devicePath.Contains("&mi_01", StringComparison.OrdinalIgnoreCase))
+        {
+            return 1;
+        }
+
+        if (devicePath.Contains("&mi_02", StringComparison.OrdinalIgnoreCase))
+        {
+            return 2;
+        }
+
+        return -1;
+    }
+
+    private static int GetEndpointByInterface(int interfaceNumber)
+    {
+        return interfaceNumber switch
+        {
+            0 => 0x81,
+            1 => 0x82,
+            2 => 0x83,
+            _ => 0
+        };
+    }
+
+    private static MouseConnectionState MapConnectionState(AjazzConnectionMode mode)
+    {
+        return mode switch
+        {
+            AjazzConnectionMode.Dock => MouseConnectionState.Dock,
+            AjazzConnectionMode.Direct => MouseConnectionState.DirectUsb,
+            _ => MouseConnectionState.Disconnected
+        };
+    }
+
+    private static IReadOnlyList<DecodedHidUsage> DecodeKnownUsages(int interfaceNumber, int reportId, byte[] payload)
+    {
+        if (payload.Length == 0)
+        {
+            return [];
+        }
+
+        List<DecodedHidUsage> usages = [];
+
+        if (interfaceNumber == 0 && payload.Length >= 7)
+        {
+            byte buttons = payload[0];
+            for (int bit = 0; bit < 5; bit++)
+            {
+                long value = (buttons >> bit) & 0x01;
+                usages.Add(new DecodedHidUsage(0x09, (ushort)(bit + 1), value, bit, 1, true, "button"));
+            }
+
+            short x = BitConverter.ToInt16(payload, 1);
+            short y = BitConverter.ToInt16(payload, 3);
+            sbyte wheel = unchecked((sbyte)payload[5]);
+            sbyte pan = unchecked((sbyte)payload[6]);
+
+            usages.Add(new DecodedHidUsage(0x01, 0x30, x, 8, 16, true, "X"));
+            usages.Add(new DecodedHidUsage(0x01, 0x31, y, 24, 16, true, "Y"));
+            usages.Add(new DecodedHidUsage(0x01, 0x38, wheel, 40, 8, true, "Wheel"));
+            usages.Add(new DecodedHidUsage(0x0C, 0x0238, pan, 48, 8, true, "AC Pan"));
+            return usages;
+        }
+
+        if (interfaceNumber == 1 && reportId == 2 && payload.Length >= 2)
+        {
+            byte bits = payload[1];
+            usages.Add(new DecodedHidUsage(0x01, 0x81, bits & 0x01, 0, 1, true, "System control 0x81"));
+            usages.Add(new DecodedHidUsage(0x01, 0x82, (bits >> 1) & 0x01, 1, 1, true, "System control 0x82"));
+            usages.Add(new DecodedHidUsage(0x01, 0x83, (bits >> 2) & 0x01, 2, 1, true, "System control 0x83"));
+            return usages;
+        }
+
+        if (interfaceNumber == 1 && reportId == 3 && payload.Length >= 3)
+        {
+            ushort consumer = BitConverter.ToUInt16(payload, 1);
+            usages.Add(new DecodedHidUsage(0x0C, 0x0001, consumer, 8, 16, true, "Consumer control"));
+            return usages;
+        }
+
+        if (interfaceNumber == 1 && reportId == 5)
+        {
+            for (int i = 1; i < payload.Length; i++)
+            {
+                usages.Add(new DecodedHidUsage(0xFFFF, (ushort)i, payload[i], i * 8, 8, false, "Vendor input byte"));
+            }
+
+            return usages;
+        }
+
+        if (interfaceNumber == 2)
+        {
+            for (int i = 0; i < payload.Length; i++)
+            {
+                usages.Add(new DecodedHidUsage(0xFFFF, (ushort)i, payload[i], i * 8, 8, false, "Vendor feature byte"));
+            }
+        }
+
+        return usages;
+    }
+
     private static string GetTransportKey(HidDevice device, AjazzDeviceSnapshot snapshot)
     {
         return snapshot.Mode switch
@@ -690,6 +1107,17 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
                 0x4026 => "usb",
                 _ => "unknown"
             }
+        };
+    }
+
+    private static string GetTransportKeyFromSnapshot(AjazzDeviceSnapshot snapshot)
+    {
+        return snapshot.Mode switch
+        {
+            AjazzConnectionMode.Dock => "dock",
+            AjazzConnectionMode.Direct => "usb",
+            AjazzConnectionMode.Disconnected => "disconnected",
+            _ => "unknown"
         };
     }
 
