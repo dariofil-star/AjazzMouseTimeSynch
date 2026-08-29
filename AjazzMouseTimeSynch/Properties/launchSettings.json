@@ -4,8 +4,10 @@
       "commandName": "Project",
       "launchBrowser": true,
       "environmentVariables": {
-        "ASPNETCORE_ENVIRONMENT": "Development"
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "DOTNET_WATCH_SUPPRESS_BROWSER_REFRESH": "1"
       },
+      "hotReloadEnabled": false,
       "applicationUrl": "https://localhost:61075;http://localhost:61076"
     }
   }

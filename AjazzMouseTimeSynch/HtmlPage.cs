@@ -344,6 +344,11 @@ public static class HtmlPage
     </div>
 
     <div class="section">
+      <div class="section-title">Detected USB HID Devices</div>
+      <div class="small" id="usbDeviceList">Loading…</div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Automatic Sync (Hrs)</div>
       <div class="controls">
         <input id="intervalHours" type="number" min="1" step="1" placeholder="Sync interval (hours)" />
@@ -388,6 +393,16 @@ public static class HtmlPage
       <div class="small">Device path: <strong id="devicePathValue">--</strong></div>
       <div class="small">Device instance: <strong id="deviceInstanceId">--</strong></div>
       <div class="small">Last battery read: <strong id="lastBatteryRead">--</strong></div>
+      <div class="small">Firmware version: <strong id="firmwareVersion">--</strong></div>
+      <div class="small">DPI (active stage): <strong id="dpiActive">--</strong></div>
+      <div class="row" style="margin-top:6px">
+        <input id="dpiValueInput" type="number" min="50" max="65535" step="50" placeholder="Set active DPI" />
+        <button class="secondary" id="setDpiBtn"><span class="btn-icon">🎯</span>Set DPI</button>
+      </div>
+      <div class="small">Sleep — 2.4G idle / deep: <strong id="sleepTimes">--</strong></div>
+      <div class="row" style="margin-top:6px">
+        <button class="secondary" id="queryDeviceBtn"><span class="btn-icon">🔍</span>Query Device</button>
+      </div>
     </div>
 
     <div class="section">
@@ -416,6 +431,7 @@ public static class HtmlPage
     const appContent = document.getElementById('appContent');
     const status = document.getElementById('status');
     const selectedPath = document.getElementById('selectedPath');
+    const usbDeviceList = document.getElementById('usbDeviceList');
     const portChip = document.getElementById('portChip');
     const batteryPercent = document.getElementById('batteryPercent');
     const connectionMode = document.getElementById('connectionMode');
@@ -423,10 +439,15 @@ public static class HtmlPage
     const devicePathValue = document.getElementById('devicePathValue');
     const deviceInstanceId = document.getElementById('deviceInstanceId');
     const lastBatteryRead = document.getElementById('lastBatteryRead');
+    const firmwareVersion = document.getElementById('firmwareVersion');
+    const dpiActive = document.getElementById('dpiActive');
+    const dpiValueInput = document.getElementById('dpiValueInput');
+    const sleepTimes = document.getElementById('sleepTimes');
 
     const wireframe = createWireframe(wireframeCanvas);
 
     let appRunning = true;
+    let lastDpiTable = null;
 
     async function call(url, options) {
       const res = await fetch(url, options);
@@ -621,6 +642,22 @@ public static class HtmlPage
       }
     }
 
+    function renderUsbDevices(devices) {
+      if (!Array.isArray(devices) || devices.length === 0) {
+        usbDeviceList.textContent = 'No HID USB devices detected.';
+        return;
+      }
+
+      const lines = devices.map(d => {
+        const name = d.productName || '(no friendly name)';
+        const vid = Number(d.vendorId).toString(16).toUpperCase().padStart(4, '0');
+        const pid = Number(d.productId).toString(16).toUpperCase().padStart(4, '0');
+        return `${name} — VID:0x${vid} PID:0x${pid}`;
+      });
+
+      usbDeviceList.innerHTML = lines.map(line => line.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')).join('<br/>');
+    }
+
     function renderMonitoring(data) {
       batteryPercent.textContent = Number.isInteger(data.batteryPercentage) ? `${data.batteryPercentage}%` : '--';
       connectionMode.textContent = data.connectionMode || '--';
@@ -630,11 +667,51 @@ public static class HtmlPage
       lastBatteryRead.textContent = data.lastBatteryReadUtc ? new Date(data.lastBatteryReadUtc).toLocaleTimeString() : '--';
     }
 
+    function renderFirmware(data) {
+      firmwareVersion.textContent = data ? data.text || '--' : '--';
+    }
+
+    function renderDpi(data) {
+      lastDpiTable = data || null;
+      if (!data) {
+        dpiActive.textContent = '--';
+        dpiValueInput.value = '';
+        return;
+      }
+
+      const stage = Number(data.activeStage ?? 0);
+      const val = Array.isArray(data.dpiValues) ? Number(data.dpiValues[stage] ?? 0) : 0;
+      const count = Number(data.stageCount ?? 0);
+      if (count <= 0 || !Number.isFinite(val) || val <= 0) {
+        dpiActive.textContent = '--';
+        dpiValueInput.value = '';
+        return;
+      }
+
+      dpiActive.textContent = `Stage ${stage + 1}: ${val} DPI`;
+      dpiValueInput.value = String(val);
+    }
+
+    function renderSleepTimes(data) {
+      if (!data || !data.sleep) { sleepTimes.textContent = '--'; return; }
+      const s = data.sleep;
+      const idle = Number(s.idle24gSeconds ?? 0);
+      const deep = Number(s.deep24gSeconds ?? 0);
+      if (idle <= 0 && deep <= 0) {
+        sleepTimes.textContent = '--';
+        return;
+      }
+      sleepTimes.textContent = `${idle}s / ${deep}s`;
+    }
+
     async function refreshMonitoring() {
-      try {
-        const monitoring = await call('/api/monitoring', { cache: 'no-store' });
-        renderMonitoring(monitoring);
-      } catch (err) {
+      const monResult = await Promise.allSettled([
+        call('/api/monitoring', { cache: 'no-store' })
+      ]);
+
+      if (monResult[0].status === 'fulfilled') {
+        renderMonitoring(monResult[0].value);
+      } else {
         batteryPercent.textContent = '--';
         connectionMode.textContent = '--';
         transport.textContent = '--';
@@ -644,9 +721,29 @@ public static class HtmlPage
       }
     }
 
+    async function refreshDeviceInfo() {
+      firmwareVersion.textContent = '…';
+      dpiActive.textContent = '…';
+      sleepTimes.textContent = '…';
+
+      const [fwResult, dpiResult, msResult] = await Promise.allSettled([
+        call('/api/device/firmware', { cache: 'no-store' }),
+        call('/api/device/dpi', { cache: 'no-store' }),
+        call('/api/device/settings', { cache: 'no-store' })
+      ]);
+
+      renderFirmware(fwResult.status === 'fulfilled' ? fwResult.value : null);
+      renderDpi(dpiResult.status === 'fulfilled' ? dpiResult.value : null);
+      renderSleepTimes(msResult.status === 'fulfilled' ? msResult.value : null);
+    }
+
     async function loadAll() {
       try {
-        const [settings, devices] = await Promise.all([call('/api/settings'), call('/api/devices')]);
+        const [settings, devices, hidDevices] = await Promise.all([
+          call('/api/settings'),
+          call('/api/devices'),
+          call('/api/hid/devices')
+        ]);
 
         intervalHours.value = settings.syncIntervalHours;
         batteryPollInterval.value = String(settings.batteryPollIntervalSeconds || 60);
@@ -655,6 +752,7 @@ public static class HtmlPage
         syncOnDeviceConnect.checked = !!settings.syncOnDeviceConnect;
 
         renderDevices(devices);
+        renderUsbDevices(hidDevices);
         selectedPath.textContent = settings.selectedDevicePath
           ? `Selected: ${settings.selectedDevicePath}`
           : 'Selected: auto-detect';
@@ -663,6 +761,7 @@ public static class HtmlPage
         customDateTime.value = settings.lastCustomDateTime || '9999-09-09T00:00';
 
         await refreshMonitoring();
+        await refreshDeviceInfo();
         setStatus('Configuration loaded.');
       } catch (err) {
         setStatus(`Load failed: ${err.message}`, false);
@@ -683,6 +782,70 @@ public static class HtmlPage
     document.getElementById('monitorRefreshBtn').addEventListener('click', async () => {
       await refreshMonitoring();
       setStatus('Telemetry refreshed.');
+    });
+
+    document.getElementById('queryDeviceBtn').addEventListener('click', async () => {
+      setStatus('Querying device…');
+      await refreshDeviceInfo();
+      setStatus('Device info updated.');
+    });
+
+    document.getElementById('setDpiBtn').addEventListener('click', async () => {
+      try {
+        if (!lastDpiTable) {
+          setStatus('Query device first to load DPI table.', false);
+          return;
+        }
+
+        const nextDpi = Number(dpiValueInput.value);
+        if (!Number.isFinite(nextDpi) || nextDpi < 50 || nextDpi > 65535) {
+          setStatus('DPI must be between 50 and 65535.', false);
+          return;
+        }
+
+        const stage = Math.max(0, Math.min(7, Number(lastDpiTable.activeStage ?? 0)));
+        const profileIndex = Math.max(0, Math.min(7, Number(lastDpiTable.profileIndex ?? 0)));
+        const stageCount = Math.max(1, Math.min(8, Number(lastDpiTable.stageCount ?? 1)));
+
+        const dpiValues = Array.isArray(lastDpiTable.dpiValues) ? lastDpiTable.dpiValues.slice(0, 8) : [];
+        while (dpiValues.length < 8) {
+          dpiValues.push(0);
+        }
+        dpiValues[stage] = Math.round(nextDpi);
+
+        const colors = Array.isArray(lastDpiTable.colors)
+          ? lastDpiTable.colors.slice(0, 8).map(c => ({
+              r: Number(c?.r ?? 0),
+              g: Number(c?.g ?? 0),
+              b: Number(c?.b ?? 0)
+            }))
+          : Array.from({ length: 8 }, () => ({ r: 0, g: 0, b: 0 }));
+
+        const payload = {
+          profileIndex,
+          activeStage: stage,
+          stageCount,
+          dpiValues,
+          colors
+        };
+
+        const result = await call('/api/device/dpi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (!result?.success) {
+          setStatus('Set DPI failed (device unavailable or rejected).', false);
+          return;
+        }
+
+        lastDpiTable = payload;
+        renderDpi(lastDpiTable);
+        setStatus(`Set active DPI to ${Math.round(nextDpi)}.`);
+      } catch (err) {
+        setStatus(`Set DPI failed: ${err.message}`, false);
+      }
     });
 
     document.getElementById('saveBtn').addEventListener('click', async () => {
@@ -757,8 +920,10 @@ public static class HtmlPage
 
     setInterval(monitorServiceStatus, 2000);
     setInterval(refreshMonitoring, 1000);
+    setInterval(refreshDeviceInfo, 15000);
     monitorServiceStatus();
     refreshMonitoring();
+    refreshDeviceInfo();
     loadAll();
   </script>
 </body>

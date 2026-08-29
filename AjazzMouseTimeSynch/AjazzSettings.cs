@@ -59,6 +59,121 @@ public interface IAjazzSettingsStore
     AjazzSettings UpdateSettings(AjazzSettingsUpdateRequest update);
 }
 
+// ── Firmware version ───────────────────────────────────────────────────────────
+
+public sealed record AjazzFirmwareVersion(ushort Raw, string Text);
+
+// ── LED setting (0x07 SET_LEDPARAM / 0x87 GET_LEDPARAM, also nested in 0x53) ─
+
+public sealed class AjazzLedSetting
+{
+    /// <summary>0=Off 1=AlwaysOn 2=Breath 3=Neon 4=Wave 5=Dazzing 6=Laser 7=MusicFollow 8=ScreenColor 9=MusicFollow2 10=UserPicture</summary>
+    public int EffectType { get; set; }
+    /// <summary>UI speed 0-4.  Wire byte = 4 - Speed.</summary>
+    public int Speed { get; set; }
+    /// <summary>Brightness 0-6 (carried in byte 3 of the 8-byte block).</summary>
+    public int Brightness { get; set; }
+    /// <summary>Dazzle modifier toggle.</summary>
+    public bool Dazzle { get; set; }
+    /// <summary>Effect-specific option (wave direction, music mode…).</summary>
+    public int Option { get; set; }
+    public byte R { get; set; }
+    public byte G { get; set; }
+    public byte B { get; set; }
+}
+
+// ── DPI table (0x54 SET_OPTIONPARAM1 / 0xD4 GET_OPTIONPARAM1) ─────────────────
+
+public sealed class AjazzDpiStageColor
+{
+    public byte R { get; set; }
+    public byte G { get; set; }
+    public byte B { get; set; }
+}
+
+public sealed class AjazzDpiTableRequest
+{
+    public int ProfileIndex { get; set; }
+    /// <summary>Currently active stage index (0-7).</summary>
+    public int ActiveStage { get; set; }
+    /// <summary>Number of enabled stages (0-8).  Values for disabled stages are ignored.</summary>
+    public int StageCount { get; set; }
+    /// <summary>DPI values for each of the 8 stages.</summary>
+    public int[] DpiValues { get; set; } = new int[8];
+    /// <summary>Per-stage indicator LED colours (max 7 writable; stage-8 B-channel is overwritten by checksum on wire).</summary>
+    public AjazzDpiStageColor[] Colors { get; set; } = Enumerable.Range(0, 8).Select(_ => new AjazzDpiStageColor()).ToArray();
+}
+
+// ── Button rebind (0x50 SET_KEYMATRIX) ────────────────────────────────────────
+
+public sealed class AjazzButtonBindRequest
+{
+    public int ProfileIndex { get; set; }
+    /// <summary>Physical button index (0-based, resolved via the device's default matrix).</summary>
+    public int ButtonIndex { get; set; }
+    /// <summary>4-byte changeArr: [type, byte1, byte2, byte3].  See protocol docs for action encoding.</summary>
+    public byte[] ActionBytes { get; set; } = new byte[4];
+}
+
+// ── Profile (0x05 SET_PROFILE / 0x85 GET_PROFILE) ────────────────────────────
+
+public sealed class AjazzSetProfileRequest
+{
+    /// <summary>Profile index 0-7.</summary>
+    public int ProfileIndex { get; set; }
+}
+
+// ── Sleep times (nested in 0x53) ──────────────────────────────────────────────
+
+public sealed class AjazzSleepTimes
+{
+    public ushort IdleBtSeconds { get; set; }
+    public ushort DeepBtSeconds { get; set; }
+    public ushort Idle24gSeconds { get; set; }
+    public ushort Deep24gSeconds { get; set; }
+}
+
+// ── Battery LED colours (nested in 0x53) ─────────────────────────────────────
+
+public sealed class AjazzBatteryLedColors
+{
+    public byte HighR { get; set; }
+    public byte HighG { get; set; }
+    public byte HighB { get; set; }
+    public byte LowR { get; set; }
+    public byte LowG { get; set; }
+    public byte LowB { get; set; }
+}
+
+// ── Omnibus mouse settings (0x53 SET_OPTIONPARAM0 / 0xD3 GET_OPTIONPARAM0) ───
+
+public sealed class AjazzMouseSettingsRequest
+{
+    public int ProfileIndex { get; set; }
+    /// <summary>Polling-rate wire code from _RateToNum: 125Hz=0x08 250Hz=0x04 500Hz=0x02 1000Hz=0x01 2000Hz=0x84 4000Hz=0x82 8000Hz=0x81.</summary>
+    public int PollingRateCode { get; set; } = 0x01;
+    /// <summary>Debounce time in ms (0-10 typical).</summary>
+    public int DebounceMs { get; set; }
+    public bool LightOff { get; set; }
+    public bool WheelLightOff { get; set; }
+    public bool MotionSmoothing { get; set; }
+    public int WheelToButton { get; set; } = 10;
+    public int ButtonToWheel { get; set; } = 10;
+    public AjazzLedSetting Light { get; set; } = new();
+    public AjazzLedSetting LogoLight { get; set; } = new();
+    public AjazzSleepTimes Sleep { get; set; } = new();
+    /// <summary>X-axis sensitivity multiplier 0-100 (default 100).</summary>
+    public int XSensitivity { get; set; } = 100;
+    /// <summary>Y-axis sensitivity multiplier 0-100 (default 100).</summary>
+    public int YSensitivity { get; set; } = 100;
+    /// <summary>Lift-off distance: 0=1mm 1=2mm 2=3mm.</summary>
+    public int LiftCutOff { get; set; }
+    public bool AngleSnap { get; set; }
+    public AjazzBatteryLedColors BatteryColors { get; set; } = new();
+    /// <summary>Whether to illuminate the LED while charging.</summary>
+    public bool ChargingSwitch { get; set; }
+}
+
 public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnvironment hostEnvironment, ILogger<AjazzSettingsStore> logger) : IAjazzSettingsStore
 {
     private static readonly HashSet<int> AllowedBatteryPollIntervalsSeconds = [5, 10, 15, 30, 45, 60, 120, 180, 300, 600, 900];
