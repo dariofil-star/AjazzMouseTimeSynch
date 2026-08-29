@@ -365,6 +365,38 @@ public static class HtmlPage
     </div>
 
     <div class="section">
+      <div class="section-title">Mouse Telemetry (HID/USB)</div>
+      <div class="row">
+        <select id="batteryPollInterval">
+          <option value="5">Battery Poll: 5s</option>
+          <option value="10">Battery Poll: 10s</option>
+          <option value="15">Battery Poll: 15s</option>
+          <option value="30">Battery Poll: 30s</option>
+          <option value="45">Battery Poll: 45s</option>
+          <option value="60">Battery Poll: 1m</option>
+          <option value="120">Battery Poll: 2m</option>
+          <option value="180">Battery Poll: 3m</option>
+          <option value="300">Battery Poll: 5m</option>
+          <option value="600">Battery Poll: 10m</option>
+          <option value="900">Battery Poll: 15m</option>
+        </select>
+        <button class="secondary" id="monitorRefreshBtn"><span class="btn-icon">📡</span>Refresh Telemetry</button>
+      </div>
+      <div class="small">Battery: <strong id="batteryPercent">--</strong></div>
+      <div class="small">Connection mode: <strong id="connectionMode">--</strong></div>
+      <div class="small">Transport: <strong id="transport">--</strong></div>
+      <div class="small">Power state: <strong id="powerCaptureState">--</strong></div>
+      <div class="small">Activity state: <strong id="activityCaptureState">--</strong></div>
+      <div class="small">Last transition: <strong id="lastConnectionTransition">--</strong></div>
+      <div class="small">Product: <strong id="productName">--</strong></div>
+      <div class="small">Manufacturer: <strong id="manufacturerName">--</strong></div>
+      <div class="small">Device path: <strong id="devicePathValue">--</strong></div>
+      <div class="small">Device instance: <strong id="deviceInstanceId">--</strong></div>
+      <div class="small">Last battery read: <strong id="lastBatteryRead">--</strong></div>
+      <div class="small">Last activity: <strong id="lastActivityRead">--</strong></div>
+    </div>
+
+    <div class="section">
       <div class="section-title">Configuration File</div>
       <div class="config-controls">
         <button class="secondary" id="reloadBtn"><span class="btn-icon">↻</span>Reload</button>
@@ -380,6 +412,7 @@ public static class HtmlPage
   <script>
     const deviceSelect = document.getElementById('deviceSelect');
     const intervalHours = document.getElementById('intervalHours');
+    const batteryPollInterval = document.getElementById('batteryPollInterval');
     const customDateTime = document.getElementById('customDateTime');
     const wireframeCanvas = document.getElementById('wireframe');
     const syncIntervalEnabled = document.getElementById('syncIntervalEnabled');
@@ -390,6 +423,18 @@ public static class HtmlPage
     const status = document.getElementById('status');
     const selectedPath = document.getElementById('selectedPath');
     const portChip = document.getElementById('portChip');
+    const batteryPercent = document.getElementById('batteryPercent');
+    const connectionMode = document.getElementById('connectionMode');
+    const transport = document.getElementById('transport');
+    const powerCaptureState = document.getElementById('powerCaptureState');
+    const activityCaptureState = document.getElementById('activityCaptureState');
+    const lastConnectionTransition = document.getElementById('lastConnectionTransition');
+    const productName = document.getElementById('productName');
+    const manufacturerName = document.getElementById('manufacturerName');
+    const devicePathValue = document.getElementById('devicePathValue');
+    const deviceInstanceId = document.getElementById('deviceInstanceId');
+    const lastBatteryRead = document.getElementById('lastBatteryRead');
+    const lastActivityRead = document.getElementById('lastActivityRead');
 
     const wireframe = createWireframe(wireframeCanvas);
 
@@ -588,11 +633,47 @@ public static class HtmlPage
       }
     }
 
+    function renderMonitoring(data) {
+      batteryPercent.textContent = Number.isInteger(data.batteryPercentage) ? `${data.batteryPercentage}%` : '--';
+      connectionMode.textContent = data.connectionMode || '--';
+      transport.textContent = data.transport || '--';
+      powerCaptureState.textContent = data.powerCaptureState || '--';
+      activityCaptureState.textContent = data.activityCaptureState || '--';
+      lastConnectionTransition.textContent = data.lastConnectionTransition || '--';
+      productName.textContent = data.product || '--';
+      manufacturerName.textContent = data.manufacturer || '--';
+      devicePathValue.textContent = data.devicePath || '--';
+      deviceInstanceId.textContent = data.deviceInstanceId || '--';
+      lastBatteryRead.textContent = data.lastBatteryReadUtc ? new Date(data.lastBatteryReadUtc).toLocaleTimeString() : '--';
+      lastActivityRead.textContent = data.lastActivityReadUtc ? new Date(data.lastActivityReadUtc).toLocaleTimeString() : '--';
+    }
+
+    async function refreshMonitoring() {
+      try {
+        const monitoring = await call('/api/monitoring', { cache: 'no-store' });
+        renderMonitoring(monitoring);
+      } catch (err) {
+        batteryPercent.textContent = '--';
+        connectionMode.textContent = '--';
+        transport.textContent = '--';
+        powerCaptureState.textContent = '--';
+        activityCaptureState.textContent = '--';
+        lastConnectionTransition.textContent = '--';
+        productName.textContent = '--';
+        manufacturerName.textContent = '--';
+        devicePathValue.textContent = '--';
+        deviceInstanceId.textContent = '--';
+        lastBatteryRead.textContent = '--';
+        lastActivityRead.textContent = '--';
+      }
+    }
+
     async function loadAll() {
       try {
         const [settings, devices] = await Promise.all([call('/api/settings'), call('/api/devices')]);
 
         intervalHours.value = settings.syncIntervalHours;
+        batteryPollInterval.value = String(settings.batteryPollIntervalSeconds || 60);
         syncIntervalEnabled.checked = !!settings.syncIntervalEnabled;
         syncOnStartup.checked = !!settings.syncOnStartup;
         syncOnDeviceConnect.checked = !!settings.syncOnDeviceConnect;
@@ -605,6 +686,7 @@ public static class HtmlPage
         portChip.textContent = `Host ${settings.webHost}`;
         customDateTime.value = settings.lastCustomDateTime || '9999-09-09T00:00';
 
+        await refreshMonitoring();
         setStatus('Configuration loaded.');
       } catch (err) {
         setStatus(`Load failed: ${err.message}`, false);
@@ -622,11 +704,17 @@ public static class HtmlPage
       }
     });
 
+    document.getElementById('monitorRefreshBtn').addEventListener('click', async () => {
+      await refreshMonitoring();
+      setStatus('Telemetry refreshed.');
+    });
+
     document.getElementById('saveBtn').addEventListener('click', async () => {
       try {
         const payload = {
           selectedDevicePath: deviceSelect.value,
           syncIntervalHours: Number(intervalHours.value || 1),
+          batteryPollIntervalSeconds: Number(batteryPollInterval.value || 60),
           syncIntervalEnabled: syncIntervalEnabled.checked,
           syncOnStartup: syncOnStartup.checked,
           syncOnDeviceConnect: syncOnDeviceConnect.checked,
@@ -640,6 +728,7 @@ public static class HtmlPage
         });
 
         intervalHours.value = updated.syncIntervalHours;
+        batteryPollInterval.value = String(updated.batteryPollIntervalSeconds || 60);
         syncIntervalEnabled.checked = !!updated.syncIntervalEnabled;
         syncOnStartup.checked = !!updated.syncOnStartup;
         syncOnDeviceConnect.checked = !!updated.syncOnDeviceConnect;
@@ -691,7 +780,9 @@ public static class HtmlPage
     window.addEventListener('resize', () => wireframe.resize(), { passive: true });
 
     setInterval(monitorServiceStatus, 2000);
+    setInterval(refreshMonitoring, 1000);
     monitorServiceStatus();
+    refreshMonitoring();
     loadAll();
   </script>
 </body>

@@ -5,6 +5,7 @@ public sealed class AjazzSettings
     public string WebHost { get; set; } = "http://127.0.0.1:5580";
     public string SelectedDevicePath { get; set; } = string.Empty;
     public int SyncIntervalHours { get; set; } = 1;
+    public int BatteryPollIntervalSeconds { get; set; } = 60;
     public bool SyncIntervalEnabled { get; set; } = true;
     public bool SyncOnStartup { get; set; } = true;
     public bool SyncOnDeviceConnect { get; set; } = true;
@@ -15,6 +16,7 @@ public sealed class AjazzSettingsUpdateRequest
 {
     public string? SelectedDevicePath { get; set; }
     public int? SyncIntervalHours { get; set; }
+    public int? BatteryPollIntervalSeconds { get; set; }
     public bool? SyncIntervalEnabled { get; set; }
     public bool? SyncOnStartup { get; set; }
     public bool? SyncOnDeviceConnect { get; set; }
@@ -36,6 +38,8 @@ public interface IAjazzSettingsStore
 
 public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnvironment hostEnvironment, ILogger<AjazzSettingsStore> logger) : IAjazzSettingsStore
 {
+    private static readonly HashSet<int> AllowedBatteryPollIntervalsSeconds = [5, 10, 15, 30, 45, 60, 120, 180, 300, 600, 900];
+
     private readonly Lock _lock = new();
     private AjazzSettings _settings = Load(configuration);
 
@@ -59,6 +63,11 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             if (update.SyncIntervalHours.HasValue)
             {
                 _settings.SyncIntervalHours = NormalizeInterval(update.SyncIntervalHours.Value);
+            }
+
+            if (update.BatteryPollIntervalSeconds.HasValue)
+            {
+                _settings.BatteryPollIntervalSeconds = NormalizeBatteryPollInterval(update.BatteryPollIntervalSeconds.Value);
             }
 
             if (update.SyncIntervalEnabled.HasValue)
@@ -93,6 +102,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
 
         settings.WebHost = NormalizeWebHost(settings.WebHost);
         settings.SyncIntervalHours = NormalizeInterval(settings.SyncIntervalHours);
+        settings.BatteryPollIntervalSeconds = NormalizeBatteryPollInterval(settings.BatteryPollIntervalSeconds);
         settings.SelectedDevicePath ??= string.Empty;
         settings.LastCustomDateTime = NormalizeCustomDateTime(settings.LastCustomDateTime);
 
@@ -106,6 +116,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             WebHost = settings.WebHost,
             SelectedDevicePath = settings.SelectedDevicePath,
             SyncIntervalHours = settings.SyncIntervalHours,
+            BatteryPollIntervalSeconds = settings.BatteryPollIntervalSeconds,
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
             SyncOnStartup = settings.SyncOnStartup,
             SyncOnDeviceConnect = settings.SyncOnDeviceConnect,
@@ -116,6 +127,11 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
     private static int NormalizeInterval(int intervalHours)
     {
         return intervalHours < 1 ? 1 : intervalHours;
+    }
+
+    private static int NormalizeBatteryPollInterval(int intervalSeconds)
+    {
+        return AllowedBatteryPollIntervalsSeconds.Contains(intervalSeconds) ? intervalSeconds : 60;
     }
 
     private static string NormalizeWebHost(string? webHost)
@@ -155,6 +171,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             WebHost = settings.WebHost,
             SelectedDevicePath = settings.SelectedDevicePath,
             SyncIntervalHours = settings.SyncIntervalHours,
+            BatteryPollIntervalSeconds = settings.BatteryPollIntervalSeconds,
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
             SyncOnStartup = settings.SyncOnStartup,
             SyncOnDeviceConnect = settings.SyncOnDeviceConnect,

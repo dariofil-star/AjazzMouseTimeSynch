@@ -66,6 +66,12 @@ public sealed class AjazzController(IAjazzSettingsStore settingsStore, AjazzCloc
         });
     }
 
+    [HttpGet("monitoring")]
+    public ActionResult<AjazzMonitoringStatus> GetMonitoringStatus()
+    {
+        return Ok(syncService.GetMonitoringStatus());
+    }
+
     [HttpGet("status")]
     public IActionResult Status()
     {
