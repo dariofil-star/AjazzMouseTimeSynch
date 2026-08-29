@@ -110,6 +110,8 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
             logger.LogError(DeviceChangeErrorEvent, ex, "Failed to start device monitor. Device monitoring will be unavailable.");
         }
 
+        LogDetectedHidDevices();
+
         if (settingsStore.GetSettings().SyncOnStartup)
         {
             try
@@ -153,40 +155,67 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
             .Where(IsAjazzControlInterface)
             .Select(device => new AjazzHidDeviceInfo(
                 device.DevicePath,
-                device.GetFriendlyName() ?? string.Empty,
+                GetFriendlyNameSafe(device),
                 device.VendorID,
                 device.ProductID))
             .OrderBy(device => device.ProductName)
             .ToList();
     }
 
-    public IReadOnlyList<AjazzHidDeviceInfo> GetAllHidDevices()
+    private IReadOnlyList<AjazzHidDeviceInfo> GetAllHidDevices()
     {
         return DeviceList.Local
             .GetHidDevices()
-            .Select(device =>
-            {
-                string friendlyName;
-                try
-                {
-                    friendlyName = device.GetFriendlyName() ?? string.Empty;
-                }
-                catch
-                {
-                    friendlyName = string.Empty;
-                }
-
-                return new AjazzHidDeviceInfo(
-                    device.DevicePath,
-                    friendlyName,
-                    device.VendorID,
-                    device.ProductID);
-            })
+            .Select(device => new AjazzHidDeviceInfo(
+                device.DevicePath,
+                GetFriendlyNameSafe(device),
+                device.VendorID,
+                device.ProductID))
             .OrderBy(device => device.VendorId)
             .ThenBy(device => device.ProductId)
             .ThenBy(device => device.ProductName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(device => device.DevicePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static string GetFriendlyNameSafe(HidDevice device)
+    {
+        try
+        {
+            return device.GetFriendlyName() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private void LogDetectedHidDevices()
+    {
+        try
+        {
+            IReadOnlyList<AjazzHidDeviceInfo> devices = GetAllHidDevices();
+            string logPath = Path.Combine(hostEnvironment.ContentRootPath, "logs", "ajazz-usb-devices.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
+
+            var lines = new List<string>
+            {
+                $"{DateTimeOffset.UtcNow:O}\tDetected HID devices: {devices.Count}"
+            };
+
+            foreach (AjazzHidDeviceInfo d in devices)
+            {
+                string line = $"{DateTimeOffset.UtcNow:O}\t{d.ProductName}\tVID=0x{d.VendorId:X4}\tPID=0x{d.ProductId:X4}\tPath={d.DevicePath}";
+                lines.Add(line);
+                logger.LogInformation("{HidDevice}", line);
+            }
+
+            File.AppendAllLines(logPath, lines);
+        }
+        catch (Exception ex)
+        {
+            logger.LogDebug(ex, "Failed to log HID device inventory at startup.");
+        }
     }
 
     public AjazzMonitoringStatus GetMonitoringStatus()
@@ -1258,7 +1287,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
             return;
         }
 
-        if (!ShouldDebugLogDevice(settings, vendorId, productId))
+        if (!ShouldDebugLogDevice(settings, vendorId))
         {
             return;
         }
@@ -1287,7 +1316,7 @@ public sealed class AjazzClockSyncService(ILogger<AjazzClockSyncService> logger,
         }
     }
 
-    private static bool ShouldDebugLogDevice(AjazzDebugLoggingSettings settings, int vendorId, int productId)
+    private static bool ShouldDebugLogDevice(AjazzDebugLoggingSettings settings, int vendorId)
     {
         return TryParseId(settings.VendorId, out int expectedVendorId)
             && expectedVendorId == vendorId;
