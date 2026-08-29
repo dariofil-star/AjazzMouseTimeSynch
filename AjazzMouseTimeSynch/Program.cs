@@ -1,37 +1,21 @@
 ﻿using Microsoft.Extensions.Hosting.WindowsServices;
-using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.EventLog;
+using Serilog;
 
 var isWindowsService = OperatingSystem.IsWindows() && WindowsServiceHelpers.IsWindowsService();
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Logging.ClearProviders();
+Log.Logger = new LoggerConfiguration()
+    .ReadFrom.Configuration(builder.Configuration)
+    .CreateLogger();
+
+builder.Host.UseSerilog();
 
 if (isWindowsService)
 {
     builder.Services.AddWindowsService(options =>
     {
         options.ServiceName = "AjazzMouseTimeSynch";
-    });
-
-    builder.Logging.AddEventLog(settings =>
-    {
-        settings.SourceName = "AjazzMouseTimeSynch";
-        settings.LogName = "Application";
-    });
-
-    builder.Logging.AddFilter<EventLogLoggerProvider>((category, level) =>
-        category is not null
-        && category.StartsWith("Ajazz", StringComparison.Ordinal)
-        && level >= LogLevel.Warning);
-}
-else
-{
-    builder.Logging.AddSimpleConsole(options =>
-    {
-        options.TimestampFormat = "yyyy-MM-dd HH:mm:ss ";
-        options.SingleLine = true;
     });
 }
 

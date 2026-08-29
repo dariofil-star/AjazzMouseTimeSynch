@@ -61,6 +61,8 @@ public sealed class AjazzDeviceMonitor : IDisposable
     private static readonly Regex VidPidRegex = new(@"vid_([0-9a-f]{4}).*pid_([0-9a-f]{4})", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex MultiInterfaceSuffixRegex = new(@"&mi_[0-9a-f]{2}", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly TimeSpan FallbackPollingInterval = TimeSpan.FromSeconds(2);
+
     private readonly Lock _lock = new();
     private readonly TimeSpan _debounceDelay;
     private readonly Timer _debounceTimer;
@@ -70,6 +72,7 @@ public sealed class AjazzDeviceMonitor : IDisposable
     private IntPtr _usbNotificationHandle;
     private bool _started;
     private bool _disposed;
+    private bool _usingPollingFallback;
 
     public AjazzDeviceMonitor(TimeSpan? debounceDelay = null)
     {
@@ -93,8 +96,16 @@ public sealed class AjazzDeviceMonitor : IDisposable
                 return;
             }
 
-            RegisterNotification(HidInterfaceGuid, out _hidNotificationHandle);
-            RegisterNotification(UsbDeviceInterfaceGuid, out _usbNotificationHandle);
+            bool registeredAnyNotification = false;
+            registeredAnyNotification |= TryRegisterNotification(HidInterfaceGuid, out _hidNotificationHandle);
+            registeredAnyNotification |= TryRegisterNotification(UsbDeviceInterfaceGuid, out _usbNotificationHandle);
+
+            _usingPollingFallback = !registeredAnyNotification;
+            if (_usingPollingFallback)
+            {
+                _debounceTimer.Change(FallbackPollingInterval, FallbackPollingInterval);
+            }
+
             _started = true;
         }
 
@@ -112,7 +123,14 @@ public sealed class AjazzDeviceMonitor : IDisposable
                 return;
             }
 
-            _debounceTimer.Change(_debounceDelay, Timeout.InfiniteTimeSpan);
+            if (_usingPollingFallback)
+            {
+                _debounceTimer.Change(_debounceDelay, FallbackPollingInterval);
+            }
+            else
+            {
+                _debounceTimer.Change(_debounceDelay, Timeout.InfiniteTimeSpan);
+            }
         }
     }
 
@@ -139,6 +157,7 @@ public sealed class AjazzDeviceMonitor : IDisposable
 
             _started = false;
             _disposed = true;
+            _usingPollingFallback = false;
         }
 
         _debounceTimer.Dispose();
@@ -167,7 +186,7 @@ public sealed class AjazzDeviceMonitor : IDisposable
         SnapshotChanged?.Invoke(this, snapshot);
     }
 
-    private void RegisterNotification(Guid interfaceGuid, out IntPtr notificationHandle)
+    private bool TryRegisterNotification(Guid interfaceGuid, out IntPtr notificationHandle)
     {
         CmNotifyFilter filter = new()
         {
@@ -177,10 +196,13 @@ public sealed class AjazzDeviceMonitor : IDisposable
         };
 
         int result = CM_Register_Notification(in filter, IntPtr.Zero, _callback, out notificationHandle);
-        if (result != 0)
+        if (result == 0)
         {
-            throw new Win32Exception(result, $"CM_Register_Notification failed for {interfaceGuid}.");
+            return true;
         }
+
+        notificationHandle = IntPtr.Zero;
+        return false;
     }
 
     private static AjazzDeviceSnapshot EnumerateSnapshot()
@@ -302,7 +324,8 @@ public sealed class AjazzDeviceMonitor : IDisposable
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "SetupDiGetDeviceInterfaceDetail failed.");
             }
 
-            string devicePath = Marshal.PtrToStringUni(IntPtr.Add(detailBuffer, 4)) ?? string.Empty;
+            int pathOffset = IntPtr.Size == 8 ? 8 : 4;
+            string devicePath = Marshal.PtrToStringUni(IntPtr.Add(detailBuffer, pathOffset)) ?? string.Empty;
             string instanceId = GetDeviceInstanceId(deviceInfoSet, devinfoData);
             string hardwareIds = GetDeviceRegistryProperty(deviceInfoSet, devinfoData, SetupDiRegistryProperty.HardwareId);
             string manufacturer = GetDeviceRegistryProperty(deviceInfoSet, devinfoData, SetupDiRegistryProperty.Manufacturer);
@@ -398,7 +421,8 @@ public sealed class AjazzDeviceMonitor : IDisposable
 
     private static bool IsInputInterface(string devicePath)
     {
-        return devicePath.Contains("&mi_00", StringComparison.OrdinalIgnoreCase);
+        return devicePath.Contains("&mi_00", StringComparison.OrdinalIgnoreCase)
+            || devicePath.Contains("&mi_01", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsControlInterface(string devicePath)

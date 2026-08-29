@@ -10,6 +10,15 @@ public sealed class AjazzSettings
     public bool SyncOnStartup { get; set; } = true;
     public bool SyncOnDeviceConnect { get; set; } = true;
     public string LastCustomDateTime { get; set; } = "9999-09-09T00:00";
+    public AjazzDebugLoggingSettings DebugLogging { get; set; } = new();
+}
+
+public sealed class AjazzDebugLoggingSettings
+{
+    public bool Enabled { get; set; }
+    public string LogFilePath { get; set; } = "logs/ajazz-hid-usb.log";
+    public string VendorId { get; set; } = "0x3151";
+    public string[] ProductIds { get; set; } = ["0x5007", "0x4026"];
 }
 
 public sealed class AjazzSettingsUpdateRequest
@@ -119,6 +128,7 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
         settings.BatteryPollIntervalSeconds = NormalizeBatteryPollInterval(settings.BatteryPollIntervalSeconds);
         settings.SelectedDevicePath ??= string.Empty;
         settings.LastCustomDateTime = NormalizeCustomDateTime(settings.LastCustomDateTime);
+        settings.DebugLogging = NormalizeDebugLogging(settings.DebugLogging);
 
         return settings;
     }
@@ -134,7 +144,14 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
             SyncOnStartup = settings.SyncOnStartup,
             SyncOnDeviceConnect = settings.SyncOnDeviceConnect,
-            LastCustomDateTime = settings.LastCustomDateTime
+            LastCustomDateTime = settings.LastCustomDateTime,
+            DebugLogging = new AjazzDebugLoggingSettings
+            {
+                Enabled = settings.DebugLogging.Enabled,
+                LogFilePath = settings.DebugLogging.LogFilePath,
+                VendorId = settings.DebugLogging.VendorId,
+                ProductIds = settings.DebugLogging.ProductIds?.ToArray() ?? []
+            }
         };
     }
 
@@ -168,6 +185,28 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
         return customDateTime.Trim();
     }
 
+    private static AjazzDebugLoggingSettings NormalizeDebugLogging(AjazzDebugLoggingSettings? debugLogging)
+    {
+        var normalized = debugLogging ?? new AjazzDebugLoggingSettings();
+
+        normalized.LogFilePath = string.IsNullOrWhiteSpace(normalized.LogFilePath)
+            ? "logs/ajazz-hid-usb.log"
+            : normalized.LogFilePath.Trim();
+
+        normalized.VendorId = string.IsNullOrWhiteSpace(normalized.VendorId)
+            ? "0x3151"
+            : normalized.VendorId.Trim();
+
+        normalized.ProductIds = normalized.ProductIds?
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Select(v => v.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray()
+            ?? ["0x5007", "0x4026"];
+
+        return normalized;
+    }
+
     private void Persist(AjazzSettings settings)
     {
         string appSettingsPath = Path.Combine(hostEnvironment.ContentRootPath, "appsettings.json");
@@ -189,7 +228,8 @@ public sealed class AjazzSettingsStore(IConfiguration configuration, IHostEnviro
             SyncIntervalEnabled = settings.SyncIntervalEnabled,
             SyncOnStartup = settings.SyncOnStartup,
             SyncOnDeviceConnect = settings.SyncOnDeviceConnect,
-            LastCustomDateTime = settings.LastCustomDateTime
+            LastCustomDateTime = settings.LastCustomDateTime,
+            DebugLogging = settings.DebugLogging
         };
 
         string json = JsonSerializer.Serialize(normalized, new JsonSerializerOptions

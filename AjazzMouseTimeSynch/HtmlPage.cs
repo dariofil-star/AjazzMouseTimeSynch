@@ -385,15 +385,9 @@ public static class HtmlPage
       <div class="small">Battery: <strong id="batteryPercent">--</strong></div>
       <div class="small">Connection mode: <strong id="connectionMode">--</strong></div>
       <div class="small">Transport: <strong id="transport">--</strong></div>
-      <div class="small">Power state: <strong id="powerCaptureState">--</strong></div>
-      <div class="small">Activity state: <strong id="activityCaptureState">--</strong></div>
-      <div class="small">Last transition: <strong id="lastConnectionTransition">--</strong></div>
-      <div class="small">Product: <strong id="productName">--</strong></div>
-      <div class="small">Manufacturer: <strong id="manufacturerName">--</strong></div>
       <div class="small">Device path: <strong id="devicePathValue">--</strong></div>
       <div class="small">Device instance: <strong id="deviceInstanceId">--</strong></div>
       <div class="small">Last battery read: <strong id="lastBatteryRead">--</strong></div>
-      <div class="small">Last activity: <strong id="lastActivityRead">--</strong></div>
     </div>
 
     <div class="section">
@@ -426,15 +420,9 @@ public static class HtmlPage
     const batteryPercent = document.getElementById('batteryPercent');
     const connectionMode = document.getElementById('connectionMode');
     const transport = document.getElementById('transport');
-    const powerCaptureState = document.getElementById('powerCaptureState');
-    const activityCaptureState = document.getElementById('activityCaptureState');
-    const lastConnectionTransition = document.getElementById('lastConnectionTransition');
-    const productName = document.getElementById('productName');
-    const manufacturerName = document.getElementById('manufacturerName');
     const devicePathValue = document.getElementById('devicePathValue');
     const deviceInstanceId = document.getElementById('deviceInstanceId');
     const lastBatteryRead = document.getElementById('lastBatteryRead');
-    const lastActivityRead = document.getElementById('lastActivityRead');
 
     const wireframe = createWireframe(wireframeCanvas);
 
@@ -637,15 +625,9 @@ public static class HtmlPage
       batteryPercent.textContent = Number.isInteger(data.batteryPercentage) ? `${data.batteryPercentage}%` : '--';
       connectionMode.textContent = data.connectionMode || '--';
       transport.textContent = data.transport || '--';
-      powerCaptureState.textContent = data.powerCaptureState || '--';
-      activityCaptureState.textContent = data.activityCaptureState || '--';
-      lastConnectionTransition.textContent = data.lastConnectionTransition || '--';
-      productName.textContent = data.product || '--';
-      manufacturerName.textContent = data.manufacturer || '--';
       devicePathValue.textContent = data.devicePath || '--';
       deviceInstanceId.textContent = data.deviceInstanceId || '--';
       lastBatteryRead.textContent = data.lastBatteryReadUtc ? new Date(data.lastBatteryReadUtc).toLocaleTimeString() : '--';
-      lastActivityRead.textContent = data.lastActivityReadUtc ? new Date(data.lastActivityReadUtc).toLocaleTimeString() : '--';
     }
 
     async function refreshMonitoring() {
@@ -656,15 +638,9 @@ public static class HtmlPage
         batteryPercent.textContent = '--';
         connectionMode.textContent = '--';
         transport.textContent = '--';
-        powerCaptureState.textContent = '--';
-        activityCaptureState.textContent = '--';
-        lastConnectionTransition.textContent = '--';
-        productName.textContent = '--';
-        manufacturerName.textContent = '--';
         devicePathValue.textContent = '--';
         deviceInstanceId.textContent = '--';
         lastBatteryRead.textContent = '--';
-        lastActivityRead.textContent = '--';
       }
     }
 

@@ -173,6 +173,7 @@ public sealed class HidMouseReverseEngineeringEngine
     private readonly Dictionary<string, LabeledCapture> _completedCaptures = new(StringComparer.OrdinalIgnoreCase);
 
     private DateTimeOffset? _lastAnyHidReportUtc;
+    private DateTimeOffset? _lastInputReportUtc;
     private DateTimeOffset? _lastMovementUtc;
     private DateTimeOffset? _lastButtonUtc;
     private DateTimeOffset? _lastBatteryUtc;
@@ -346,9 +347,12 @@ public sealed class HidMouseReverseEngineeringEngine
             if (connection == MouseConnectionState.Disconnected)
             {
                 _lastAnyHidReportUtc = null;
+                _lastInputReportUtc = null;
                 _lastMovementUtc = null;
                 _lastButtonUtc = null;
                 _lastBatteryUtc = null;
+                _lastBatteryPercent = null;
+                _lastVendorChargingByte = null;
                 _wakeUntilUtc = null;
             }
 
@@ -358,6 +362,7 @@ public sealed class HidMouseReverseEngineeringEngine
                 ActivityState = connection == MouseConnectionState.Disconnected ? MouseActivityState.Unknown : _state.ActivityState,
                 PowerState = connection == MouseConnectionState.Disconnected ? MousePowerState.Unknown : _state.PowerState,
                 ChargingSource = connection == MouseConnectionState.Disconnected ? ChargingSource.None : _state.ChargingSource,
+                BatteryPercent = connection == MouseConnectionState.Disconnected ? null : _lastBatteryPercent,
                 IsCharging = connection == MouseConnectionState.Disconnected ? false : _state.IsCharging,
                 IsFullyCharged = connection == MouseConnectionState.Disconnected ? false : _state.IsFullyCharged,
                 IsSleeping = connection == MouseConnectionState.Disconnected ? false : _state.IsSleeping,
@@ -385,12 +390,13 @@ public sealed class HidMouseReverseEngineeringEngine
                 return;
             }
 
-            if (!_lastAnyHidReportUtc.HasValue)
+            DateTimeOffset? referenceReport = _lastInputReportUtc ?? _lastAnyHidReportUtc;
+            if (!referenceReport.HasValue)
             {
                 return;
             }
 
-            TimeSpan silence = now - _lastAnyHidReportUtc.Value;
+            TimeSpan silence = now - referenceReport.Value;
             double sleepThreshold = GetSleepSilenceThresholdSeconds();
 
             if (silence.TotalSeconds < sleepThreshold)
@@ -465,6 +471,11 @@ public sealed class HidMouseReverseEngineeringEngine
             MouseState previous = _state;
 
             _lastAnyHidReportUtc = now;
+            if (report.Direction == HidReportDirection.Input)
+            {
+                _lastInputReportUtc = now;
+            }
+
             if (report.IsMovement || report.IsWheel)
             {
                 _lastMovementUtc = now;
@@ -483,37 +494,25 @@ public sealed class HidMouseReverseEngineeringEngine
             }
 
             bool chargingCandidate = TryExtractChargingCandidate(report, out byte? chargingByte);
-            bool charging = _state.IsCharging;
-            bool fullyCharged = _state.IsFullyCharged;
+            bool charging = false;
+            bool fullyCharged = false;
 
             if (chargingCandidate && chargingByte.HasValue)
             {
-                if (_lastVendorChargingByte.HasValue && chargingByte.Value != _lastVendorChargingByte.Value)
-                {
-                    charging = chargingByte.Value != 0;
-                }
-
-                if (chargingByte.Value == 0x02)
-                {
-                    fullyCharged = true;
-                    charging = false;
-                }
-
+                charging = chargingByte.Value == 0x01;
+                fullyCharged = chargingByte.Value == 0x02;
                 _lastVendorChargingByte = chargingByte.Value;
             }
 
-            if (_lastBatteryPercent.HasValue && previous.BatteryPercent.HasValue)
+            if (_lastBatteryPercent.HasValue && previous.BatteryPercent.HasValue && _lastBatteryPercent.Value > previous.BatteryPercent.Value)
             {
-                if (_lastBatteryPercent.Value > previous.BatteryPercent.Value)
-                {
-                    charging = true;
-                }
+                charging = true;
+            }
 
-                if (_lastBatteryPercent.Value >= 100)
-                {
-                    fullyCharged = true;
-                    charging = false;
-                }
+            if (_lastBatteryPercent.HasValue && _lastBatteryPercent.Value >= 100 && charging)
+            {
+                fullyCharged = true;
+                charging = false;
             }
 
             MouseActivityState activity = ComputeActivityState(now, report.IsMovement || report.IsWheel || report.IsButton);
@@ -859,9 +858,9 @@ public sealed class HidMouseReverseEngineeringEngine
             if (_state.ActivityState == MouseActivityState.ActualSleep)
             {
                 _wakeUntilUtc = now.AddSeconds(2);
-                if (_lastAnyHidReportUtc.HasValue && _lastMovementUtc.HasValue)
+                if (_lastInputReportUtc.HasValue && _lastMovementUtc.HasValue)
                 {
-                    _observedSleepTimeoutsSeconds.Add((_lastMovementUtc.Value - _lastAnyHidReportUtc.Value).Duration().TotalSeconds);
+                    _observedSleepTimeoutsSeconds.Add((_lastMovementUtc.Value - _lastInputReportUtc.Value).Duration().TotalSeconds);
                 }
 
                 return MouseActivityState.WakeAfterMovement;
@@ -875,13 +874,14 @@ public sealed class HidMouseReverseEngineeringEngine
             return MouseActivityState.WakeAfterMovement;
         }
 
-        if (!_lastAnyHidReportUtc.HasValue)
+        DateTimeOffset? referenceInput = _lastInputReportUtc ?? _lastAnyHidReportUtc;
+        if (!referenceInput.HasValue)
         {
             return MouseActivityState.Unknown;
         }
 
-        double sinceAny = (now - _lastAnyHidReportUtc.Value).TotalSeconds;
-        if (sinceAny >= GetSleepSilenceThresholdSeconds())
+        double sinceInput = (now - referenceInput.Value).TotalSeconds;
+        if (sinceInput >= GetSleepSilenceThresholdSeconds())
         {
             return MouseActivityState.ActualSleep;
         }
@@ -920,20 +920,25 @@ public sealed class HidMouseReverseEngineeringEngine
 
         if (report.InterfaceNumber == 2 && report.Direction == HidReportDirection.Feature)
         {
-            for (int i = 0; i < report.RawBytes.Length; i++)
+            if (report.RawBytes.Length >= 4
+                && report.RawBytes[0] == 0x05
+                && report.RawBytes[1] == 0x00
+                && report.RawBytes[2] == 0x00)
             {
-                int value = report.RawBytes[i];
-                if (value is >= 0 and <= 100)
+                int percent = report.RawBytes[3];
+                if (percent is >= 1 and <= 100)
                 {
-                    return value;
+                    return percent;
                 }
             }
+
+            return null;
         }
 
-        if (report.InterfaceNumber == 1 && report.ReportId == 5 && report.RawBytes.Length >= 3)
+        if (report.InterfaceNumber == 1 && report.ReportId == 5 && report.RawBytes.Length >= 4)
         {
-            int value = report.RawBytes[^1];
-            if (value is >= 0 and <= 100)
+            int value = report.RawBytes[3];
+            if (value is >= 1 and <= 100)
             {
                 return value;
             }
@@ -1091,11 +1096,6 @@ public sealed class HidMouseReverseEngineeringEngine
             if (state.IsCharging)
             {
                 return state with { DerivedState = "charging-on-dock" };
-            }
-
-            if (state.ActivityState == MouseActivityState.ActualSleep)
-            {
-                return state with { DerivedState = "sleeping-off-dock" };
             }
 
             return state with { DerivedState = "placed-on-dock" };
